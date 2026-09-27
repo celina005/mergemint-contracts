@@ -63,3 +63,9 @@ Contract events emitted for indexer integration.
 - **Data**: `(bounty_id, amount)`
 - **Trigger**: A milestone is completed and its staged reward paid
 - **Purpose**: Notify indexer of milestone-level progress
+
+### contract_upgraded
+- **Topics**: `(Symbol("contract_upgraded"), admin_address)`
+- **Data**: `new_wasm_hash`
+- **Trigger**: Admin upgrades the contract WASM while the contract is paused
+- **Purpose**: Notify indexer of an in-place code upgrade and the new WASM hash
