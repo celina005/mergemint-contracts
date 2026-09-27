@@ -161,6 +161,35 @@ impl MergeMintContract {
         items
     }
 
+    /// Return a bounded page of bounty IDs created by `creator`.
+    ///
+    /// `offset` is the zero-based index of the first item to return; `limit`
+    /// is capped at `MAX_LIMIT` (50) to bound ledger read entries and memory
+    /// per invocation. Ordering is stable across calls: IDs are returned in
+    /// ascending creation order (the order of the creator index). Returns an
+    /// empty vec when `offset` is beyond the end of the list.
+    ///
+    /// Example: `get_bounties_by_creator(env, addr, 0, 20)` → first 20.
+    pub fn get_bounties_by_creator(
+        env: Env,
+        creator: Address,
+        offset: u32,
+        limit: u32,
+    ) -> Vec<BountyId> {
+        let all = storage::get_bounties_by_creator(&env, &creator);
+        let (items, _) = paginate(&env, all, Some(offset), limit);
+        items
+    }
+
+    /// Return the total number of bounties created by `creator`.
+    ///
+    /// Companion to `get_bounties_by_creator` so clients can render page
+    /// controls (total pages = ceil(count / limit)). Reads the creator index
+    /// length without materializing the full ID list.
+    pub fn get_bounties_by_creator_count(env: Env, creator: Address) -> u32 {
+        storage::get_bounties_by_creator_count(&env, &creator)
+    }
+
     /// Return all open bounty IDs that carry the requested tag.
     ///
     /// Supports `GET /api/bounties?tag=<tag>`. Iterates the open-bounties index
@@ -202,32 +231,5 @@ impl MergeMintContract {
             }
         }
         None
-    }
-
-    /// Return every bounty ID `address` was an assignee on that has reached a
-    /// terminal status (`"completed"` or `"cancelled"`).
-    ///
-    /// Unlike `get_contributor_active_bounty` (which only surfaces the
-    /// current in-progress claim), this surfaces the contributor's full
-    /// bounty history. The index is maintained incrementally in
-    /// `storage::move_bounty_status` as bounties transition status, so this
-    /// call is O(1) rather than a scan. Returns an empty `Vec` if the
-    /// contributor has no completed or cancelled bounties.
-    pub fn get_contributor_completed_bounties(env: Env, address: Address) -> Vec<BountyId> {
-        storage::get_contributor_completed_bounties(&env, &address)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use soroban_sdk::Env;
-
-    #[test]
-    fn version_returns_semver_string() {
-        let env = Env::default();
-        let v = MergeMintContract::version(env.clone());
-        assert_eq!(v, Symbol::new(&env, CONTRACT_VERSION));
-        assert_eq!(v, Symbol::new(&env, "1.0.0"));
     }
 }

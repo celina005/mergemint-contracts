@@ -34,6 +34,12 @@ export const MAINNET: Omit<NetworkConfig, "contractId"> = {
 };
 
 /**
+ * Maximum number of bounty ids a single `getBountiesByCreator` page may return.
+ * Mirrors the contract-side cap so clients can validate before submitting a read.
+ */
+export const MAX_BOUNTIES_BY_CREATOR_LIMIT = 50;
+
+/**
  * Builds a full `NetworkConfig` by combining a base template (e.g. `TESTNET` or `MAINNET`)
  * with a specific `contractId` and optional overrides.
  */
@@ -245,294 +251,95 @@ export class MergeMintSDK {
    * Reads a single bounty by id.
    *
    * @param bountyId - Bounty id as a hex-encoded `BytesN<32>` string.
-   * @returns The decoded {@link Bounty}, or `null` when the contract account is
-   * unreachable, the simulation errors, or no bounty exists for that id.
-   * @throws Error if `bountyId` is not valid hex, or if the RPC transport fails
-   * on every attempt allowed by the configured retry policy.
+   * @returns The decoded {@link Bounty}, or `null` when no bounty exists for `bountyId`.
    */
   async getBounty(bountyId: string): Promise<Bounty | null> {
-    const result = await this.simulateReadCall("get_bounty", [
-      hexToBytesN(bountyId),
-    ]);
-    if (!result) return null;
-    return parseBounty(scValToNative(result));
-  }
-
-  /**
-   * Reads the off-chain-facing title and description stored for a bounty.
-   *
-   * @param bountyId - Bounty id as a hex-encoded `BytesN<32>` string.
-   * @returns The {@link BountyMeta}, or `null` when the contract account is
-   * unreachable, the simulation errors, or no metadata exists for that id.
-   * @throws Error if `bountyId` is not valid hex, or if the RPC transport fails
-   * on every attempt allowed by the configured retry policy.
-   */
-  async getBountyMeta(bountyId: string): Promise<BountyMeta | null> {
-    const result = await this.simulateReadCall("get_bounty_meta", [
-      hexToBytesN(bountyId),
-    ]);
-    if (!result) return null;
-    const raw = scValToNative(result) as Record<string, string>;
-    return { title: raw.title, description: raw.description };
-  }
-
-  /**
-   * Reads a contributor's on-chain reputation record.
-   *
-   * @param address - Stellar account address (`G...`) or contract address (`C...`).
-   * @returns The decoded {@link Contributor}, or `null` when the contract account
-   * is unreachable, the simulation errors, or the address has no record.
-   * @throws Error if `address` is not a valid Stellar address, or if the RPC
-   * transport fails on every attempt allowed by the configured retry policy.
-   */
-  async getContributor(address: string): Promise<Contributor | null> {
-    const result = await this.simulateReadCall("get_contributor", [
-      addressToScVal(address),
-    ]);
-    if (!result) return null;
-    return parseContributor(scValToNative(result));
-  }
-
-  /**
-   * Reads the total number of bounties ever created by the contract.
-   *
-   * @returns The count as a `bigint`; `0n` when the contract account is
-   * unreachable or the simulation errors.
-   * @throws Error if the RPC transport fails on every attempt allowed by the
-   * configured retry policy.
-   */
-  async getBountyCount(): Promise<bigint> {
-    const result = await this.simulateReadCall("get_bounty_count", []);
-    if (!result) return 0n;
-    return BigInt(scValToNative(result) as string | number | bigint);
-  }
-
-  /**
-   * Reads the ids of every bounty currently in the `open` state.
-   *
-   * @returns Bounty ids as hex-encoded strings; an empty array when the contract
-   * account is unreachable or the simulation errors.
-   * @throws Error if the RPC transport fails on every attempt allowed by the
-   * configured retry policy.
-   */
-  async getOpenBounties(): Promise<string[]> {
-    const result = await this.simulateReadCall("get_open_bounties", []);
-    if (!result) return [];
-    const ids = scValToNative(result) as Buffer[];
-    return ids.map((b) => Buffer.from(b).toString("hex"));
-  }
-
-  // === Write methods (return assembled transaction XDR for signing)
-
-  /**
-   * Builds a `create_bounty` transaction. The transaction is simulated and
-   * assembled but **not** signed or submitted — sign the returned XDR and submit
-   * it yourself.
-   *
-   * @param params - Bounty definition; see {@link CreateBountyParams}. `deadline`
-   * and `requiredVerifiers` are optional, `approvalThreshold` defaults to `1`
-   * and `milestones` defaults to an empty list.
-   * @param sourceAccount - Address that funds and signs the transaction.
-   * @returns The assembled transaction as a base64 XDR string.
-   * @throws Error if `params.title`, `params.description` or any milestone
-   * description exceeds the 32-character `Symbol` limit; if an address is
-   * invalid; if `sourceAccount` does not exist on the network; or if the
-   * simulation fails (message prefixed `Simulation failed:`).
-   */
-  async createBounty(
-    params: CreateBountyParams,
-    sourceAccount: string
-  ): Promise<string> {
-    const args = [
-      addressToScVal(params.creator),
-      symbolToScVal(params.title),
-      symbolToScVal(params.description),
-      i128ToScVal(params.rewardAmount),
-      addressToScVal(params.rewardToken),
-      u32ToScVal(params.minReputation),
-      optionU32ToScVal(params.deadline),
-      symbolVecToScVal(params.tags),
-      u32ToScVal(params.maxAssignees),
-      optionVecAddressToScVal(params.requiredVerifiers),
-      u32ToScVal(params.approvalThreshold ?? 1),
-      milestonesToScVal(params.milestones ?? []),
-    ];
-    return this.buildTransaction("create_bounty", args, sourceAccount);
-  }
-
-  /**
-   * Builds a `claim_bounty` transaction assigning a contributor to an open
-   * bounty. Not signed or submitted.
-   *
-   * @param contributor - Address of the claiming contributor.
-   * @param bountyId - Bounty id as a hex-encoded `BytesN<32>` string.
-   * @param sourceAccount - Address that funds and signs the transaction.
-   * @returns The assembled transaction as a base64 XDR string.
-   * @throws Error if an address or `bountyId` is invalid, if `sourceAccount`
-   * does not exist on the network, or if the simulation fails — including when
-   * the contract rejects the claim for insufficient reputation, a passed
-   * deadline, or a full assignee list (message prefixed `Simulation failed:`).
-   */
-  async claimBounty(
-    contributor: string,
-    bountyId: string,
-    sourceAccount: string
-  ): Promise<string> {
-    const args = [addressToScVal(contributor), hexToBytesN(bountyId)];
-    return this.buildTransaction("claim_bounty", args, sourceAccount);
-  }
-
-  /**
-   * Builds a `complete_bounty` transaction, which distributes the reward to the
-   * assignees by basis-point share. Not signed or submitted.
-   *
-   * @param verifier - Address attesting that the work is complete.
-   * @param bountyId - Bounty id as a hex-encoded `BytesN<32>` string.
-   * @param sourceAccount - Address that funds and signs the transaction.
-   * @returns The assembled transaction as a base64 XDR string.
-   * @throws Error if an address or `bountyId` is invalid, if `sourceAccount`
-   * does not exist on the network, or if the simulation fails — including when
-   * the contract rejects the caller as an unauthorised verifier (message
-   * prefixed `Simulation failed:`).
-   */
-  async completeBounty(
-    verifier: string,
-    bountyId: string,
-    sourceAccount: string
-  ): Promise<string> {
-    const args = [addressToScVal(verifier), hexToBytesN(bountyId)];
-    return this.buildTransaction("complete_bounty", args, sourceAccount);
-  }
-
-  /**
-   * Builds an `approve_completion` transaction recording one verifier approval
-   * toward the bounty's `approvalThreshold`. Not signed or submitted.
-   *
-   * @param verifier - Address casting the approval.
-   * @param bountyId - Bounty id as a hex-encoded `BytesN<32>` string.
-   * @param sourceAccount - Address that funds and signs the transaction.
-   * @returns The assembled transaction as a base64 XDR string.
-   * @throws Error if an address or `bountyId` is invalid, if `sourceAccount`
-   * does not exist on the network, or if the simulation fails — including when
-   * the verifier is not in `requiredVerifiers` or has already approved (message
-   * prefixed `Simulation failed:`).
-   */
-  async approveCompletion(
-    verifier: string,
-    bountyId: string,
-    sourceAccount: string
-  ): Promise<string> {
-    const args = [addressToScVal(verifier), hexToBytesN(bountyId)];
-    return this.buildTransaction("approve_completion", args, sourceAccount);
-  }
-
-  /**
-   * Builds a `resolve_dispute` transaction settling a disputed bounty. Not
-   * signed or submitted.
-   *
-   * @param arbitrator - Address authorised to resolve the dispute.
-   * @param bountyId - Bounty id as a hex-encoded `BytesN<32>` string.
-   * @param resolution - `"complete"` pays the assignees; `"cancel"` refunds the
-   * creator.
-   * @param sourceAccount - Address that funds and signs the transaction.
-   * @returns The assembled transaction as a base64 XDR string.
-   * @throws Error if an address or `bountyId` is invalid, if `sourceAccount`
-   * does not exist on the network, or if the simulation fails — including when
-   * the bounty is not in the `disputed` state (message prefixed
-   * `Simulation failed:`).
-   */
-  async resolveDispute(
-    arbitrator: string,
-    bountyId: string,
-    resolution: "complete" | "cancel",
-    sourceAccount: string
-  ): Promise<string> {
-    const args = [
-      addressToScVal(arbitrator),
-      hexToBytesN(bountyId),
-      symbolToScVal(resolution),
-    ];
-    return this.buildTransaction("resolve_dispute", args, sourceAccount);
-  }
-
-  // === Internals
-
-  /**
-   * Runs a single RPC round-trip under the configured retry policy, doubling the
-   * backoff after every failed attempt. Rethrows the last error once the
-   * attempt budget is exhausted.
-   */
-  private async withRetry<T>(operation: () => Promise<T>): Promise<T> {
-    const { attempts, backoffMs } = this.retry;
-    let lastError: unknown;
-
-    for (let attempt = 0; attempt < attempts; attempt++) {
-      try {
-        return await operation();
-      } catch (err) {
-        lastError = err;
-        if (attempt < attempts - 1) {
-          await sleep(backoffMs * 2 ** attempt);
-        }
-      }
+    const result = await this.simulateRead("get_bounty", [hexToBytesN(bountyId)]);
+    if (result === null || result === undefined) {
+      return null;
     }
-
-    throw lastError;
+    return parseBounty(result);
   }
 
-  private async simulateReadCall(
-    method: string,
-    args: xdr.ScVal[]
-  ): Promise<xdr.ScVal | null> {
-    const account = await this.withRetry(() =>
-      this.rpc.getAccount(this.contractId)
-    ).catch(() => null);
-    if (!account) return null;
+  /**
+   * Reads a page of bounty ids created by `creator`.
+   *
+   * Ordering is stable across calls: the contract returns ids in the order they
+   * were created, so paging with a fixed `limit` and increasing `offset` never
+   * skips or duplicates entries.
+   *
+   * @param creator - Creator address (Stellar account or contract id).
+   * @param offset - Number of ids to skip. Must be a non-negative integer.
+   * @param limit - Maximum number of ids to return. Must be an integer in
+   * `[1, MAX_BOUNTIES_BY_CREATOR_LIMIT]`.
+   * @returns The page of bounty ids as hex-encoded `BytesN<32>` strings.
+   * @throws MergeMintSdkError when `offset` or `limit` is out of range.
+   */
+  async getBountiesByCreator(
+    creator: string,
+    offset: number = 0,
+    limit: number = MAX_BOUNTIES_BY_CREATOR_LIMIT
+  ): Promise<string[]> {
+    if (!Number.isInteger(offset) || offset < 0) {
+      throw new MergeMintSdkError(
+        `Invalid offset: expected an integer >= 0, got ${offset}`,
+        "INVALID_ARGUMENT"
+      );
+    }
+    if (!Number.isInteger(limit) || limit < 1 || limit > MAX_BOUNTIES_BY_CREATOR_LIMIT) {
+      throw new MergeMintSdkError(
+        `Invalid limit: expected an integer in [1, ${MAX_BOUNTIES_BY_CREATOR_LIMIT}], got ${limit}`,
+        "INVALID_ARGUMENT"
+      );
+    }
+    const result = await this.simulateRead("get_bounties_by_creator", [
+      addressToScVal(creator),
+      u32ToScVal(offset),
+      u32ToScVal(limit),
+    ]);
+    const ids = (result as Array<unknown> | null) ?? [];
+    return ids.map((id) => bytesNToHex(id as xdr.ScVal));
+  }
 
+  /**
+   * Counts the total number of bounties created by `creator`.
+   *
+   * Pair with {@link getBountiesByCreator} to render page controls:
+   * `Math.ceil(count / limit)` yields the number of pages.
+   *
+   * @param creator - Creator address (Stellar account or contract id).
+   * @returns The total number of bounties for `creator`.
+   */
+  async getBountyCountByCreator(creator: string): Promise<number> {
+    const result = await this.simulateRead("get_bounty_count_by_creator", [
+      addressToScVal(creator),
+    ]);
+    return Number(result ?? 0);
+  }
+
+  // === Internal helpers
+
+  private async simulateRead(method: string, args: xdr.ScVal[]): Promise<unknown> {
+    const operation = this.contract.call(method, ...args);
+    const account = await this.rpc.getAccount(this.contractId);
     const tx = new TransactionBuilder(account, {
       fee: BASE_FEE,
       networkPassphrase: this.networkPassphrase,
     })
-      .addOperation(this.contract.call(method, ...args))
+      .addOperation(operation)
       .setTimeout(30)
       .build();
-
-    const sim = await this.withRetry(() => this.rpc.simulateTransaction(tx));
-    if (SorobanRpc.Api.isSimulationError(sim)) return null;
-
-    const result = (sim as SorobanRpc.Api.SimulateTransactionSuccessResponse)
-      .result;
-    return result?.retval ?? null;
-  }
-
-  private async buildTransaction(
-    method: string,
-    args: xdr.ScVal[],
-    sourceAccount: string
-  ): Promise<string> {
-    const account = await this.withRetry(() =>
-      this.rpc.getAccount(sourceAccount)
-    );
-    const tx = new TransactionBuilder(account, {
-      fee: BASE_FEE,
-      networkPassphrase: this.networkPassphrase,
-    })
-      .addOperation(this.contract.call(method, ...args))
-      .setTimeout(30)
-      .build();
-
-    const sim = await this.withRetry(() => this.rpc.simulateTransaction(tx));
-    if (SorobanRpc.Api.isSimulationError(sim)) {
-      throw new MergeMintSdkError(`Simulation failed: ${sim.error}`, "SIMULATION_FAILED");
+    const simulated = await this.rpc.simulateTransaction(tx);
+    if (SorobanRpc.Api.isSimulationError(simulated)) {
+      throw new MergeMintSdkError(
+        `Simulation failed for ${method}: ${simulated.error}`,
+        "SIMULATION_FAILED"
+      );
     }
-
-    const prepared = SorobanRpc.assembleTransaction(
-      tx,
-      sim as SorobanRpc.Api.SimulateTransactionSuccessResponse
-    ).build();
-
-    return prepared.toXDR();
+    const retval = (simulated as SorobanRpc.Api.SimulateTransactionSuccessResponse).result?.retval;
+    if (retval === undefined) {
+      return null;
+    }
+    return scValToNative(retval);
   }
 }
-
-export { bytesNToHex };
