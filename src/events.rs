@@ -45,6 +45,20 @@ pub fn emit_bounty_expired(env: &Env, bounty_id: &BountyId, creator: &Address) {
         .publish((topic, creator.clone()), bounty_id.clone());
 }
 
+pub fn emit_bounty_topped_up(
+    env: &Env,
+    bounty_id: &BountyId,
+    creator: &Address,
+    amount: &i128,
+    new_reward: &i128,
+) {
+    let topic = Symbol::new(env, "bounty_topped_up");
+    env.events().publish(
+        (topic, creator.clone()),
+        (bounty_id.clone(), *amount, *new_reward),
+    );
+}
+
 pub fn emit_approval_recorded(
     env: &Env,
     bounty_id: &BountyId,
